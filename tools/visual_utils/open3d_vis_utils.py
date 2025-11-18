@@ -9,10 +9,17 @@ import matplotlib
 import numpy as np
 
 box_colormap = [
-    [1, 1, 1],
-    [0, 1, 0],
-    [0, 1, 1],
-    [1, 1, 0],
+    [0.5, 0.5, 0.5],  # 0: backgroud
+    [0, 1, 0],  # 1: car (Green)
+    [1, 0, 0],  # 2: truck (Red)
+    [1, 0, 0],  # 3: construction_vehicle (Red)
+    [1, 0, 0],  # 4: bus (Red)
+    [1, 0, 0],  # 5: trailer (Red)
+    [1, 0, 0],  # 6: barrier (Red)
+    [0, 1, 1],  # 7: motorcycle (Cyan)
+    [0, 0, 1],  # 8: bicycle (Blue)
+    [1, 0, 1],  # 9: pedestrian (Magenta)
+    [1, 1, 0],  # 10: traffic_cone (Yellow)
 ]
 
 

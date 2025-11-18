@@ -1,5 +1,8 @@
 import os
+os.environ["TORCH_CUDA_ARCH_LIST"] = "8.9"
+os.environ["TORCH_NVCC_FLAGS"] = "--allow-unsupported-compiler"
 import subprocess
+import torch
 
 from setuptools import find_packages, setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension

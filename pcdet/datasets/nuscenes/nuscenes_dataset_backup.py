@@ -95,27 +95,11 @@ class NuScenesDataset(DatasetTemplate):
             return points[mask]
 
         lidar_path = self.root_path / sweep_info['lidar_path']
-
-        # points_sweep = np.fromfile(str(lidar_path), dtype=np.float32, count=-1).reshape([-1, 5])[:, :4]
-
         # ======================= 수정 포인트 !!!! =============================
-        # ⬇️ [VLP-16 시뮬레이션 수정 시작] ⬇️
-        # 1. 5개 컬럼(x, y, z, intensity, ring_index)을 모두 읽습니다.
-        points_sweep = np.fromfile(str(lidar_path), dtype=np.float32, count=-1).reshape([-1, 5])
-
-        # 2. 남길 ring_index 리스트를 정의합니다. (사용자님이 주신 리스트)
-        # (주의: nuScenes ring index는 보통 0~31입니다. 만약 32가 에러를 일으키면 제외해주세요.)
-        TARGET_RINGS = [31, 30, 28, 27, 25, 24, 22, 21, 19, 17, 16, 14, 13, 12, 10, 8]
-
-        # 3. ring_index (4번째 컬럼)가 TARGET_RINGS에 포함된 포인트만 남기는 마스크를 만듭니다.
-        ring_mask = np.isin(points_sweep[:, 4], TARGET_RINGS)
-
-        # 4. 마스크를 적용하여 필터링합니다.
-        points_sweep = points_sweep[ring_mask]
-
-        # 5. 이제 ring_index는 필요 없으니 버리고, 앞의 4개 컬럼만 남깁니다.
-        points_sweep = points_sweep[:, :4]
-        # ⬆️ [VLP-16 시뮬레이션 수정 끝] ⬆️
+        # 과거 데이터를 읽고 ring_index를 버림.
+        points_sweep = np.fromfile(str(lidar_path), dtype=np.float32, count=-1).reshape([-1, 5])[:, :4]
+        # reshape([-1, 5]): 원본 데이터는 5개 컬럼 (x, y, z, intensity, ring_index)을 가지고 있습니다.
+        # [:, :4]: 이 부분에서 5번째 컬럼인 ring_index가 삭제되고, 앞의 4개 (x, y, z, intensity)만 남습니다.
 
         points_sweep = remove_ego_points(points_sweep).T # 차체 노이즈를 제거하고 전치 행렬을 만듦. (4, N)
 
@@ -131,24 +115,13 @@ class NuScenesDataset(DatasetTemplate):
     def get_lidar_with_sweeps(self, index, max_sweeps=1):  # max_sweeps=1: 총 몇 개의 프레임을 합칠지 결정
         info = self.infos[index] # 해당 인덱스의 메타데이터를 가져옴. (라이다 파일 경로, 과거 프레임 정보 리스트, 정답 박스 등)
         lidar_path = self.root_path / info['lidar_path'] # 현재 프레임의 실제 파일 경로 완성
-
-        # points = np.fromfile(str(lidar_path), dtype=np.float32, count=-1).reshape([-1, 5])[:, :4]
-        
-        # ⬇️ [VLP-16 시뮬레이션 수정 시작] ⬇️
-        # 1. 5개 컬럼 모두 읽기
-        points = np.fromfile(str(lidar_path), dtype=np.float32, count=-1).reshape([-1, 5])
-
-        # 2. 남길 ring_index 리스트 (위와 동일)
-        TARGET_RINGS = [31, 30, 28, 27, 25, 24, 22, 21, 19, 17, 16, 14, 13, 12, 10, 8]
-        
-        # 3. 필터링
-        ring_mask = np.isin(points[:, 4], TARGET_RINGS)
-        points = points[ring_mask]
-        
-        # 4. ring_index 버리기
-        points = points[:, :4]
-        # ⬆️ [VLP-16 시뮬레이션 수정 끝] ⬆️
-
+        # ===================== 중요 ===========================
+        points = np.fromfile(str(lidar_path), dtype=np.float32, count=-1).reshape([-1, 5])[:, :4]
+        # 역할 : "현재" 프레임의 바이너리 데이터를 읽고, 5번째 정보를 버립니다. (🚨 매우 중요)
+        # .reshape([-1, 5]): 일렬로 나열된 데이터를 포인트당 5개 값 (x, y, z, intensity, ring_index)을 가지는 형태로 재배열
+        # [:, :4]: [졸업 프로젝트 수정 포인트 1]
+            # 모든 포인트(:)에 대해, 앞의 4개 컬럼(:4 ➡️ 0, 1, 2, 3번 인덱스)만 남깁니다.
+            # x, y, z, intensity만 남기고 ring_index는 이 순간 삭제
 
         sweep_points_list = [points] # 합체할 데이터를 담을 **바구니(리스트)**를 준비
         sweep_times_list = [np.zeros((points.shape[0], 1))] # "현재" 포인트들의 시간 차이(time_lag)는 0초이므로, 포인트 개수만큼의 0.0을 담은 배열을 만들어 담습니다.
@@ -307,20 +280,12 @@ class NuScenesDataset(DatasetTemplate):
 
         return data_dict # 이게 train.py에서 collate_batch 함수를 거쳐 GPU로 올라가고 forward path 진행 !!
 
-    def evaluation(self, det_annos, class_names, **kwargs): # raw 예측 결과(det_annos)를 받아서 평가하고 최종 성적표를 발급하는 채점관
+    def evaluation(self, det_annos, class_names, **kwargs):
         import json
-        from nuscenes.nuscenes import NuScenes # 공식 평가를 위해 nuScenes devkit을 불러옵니다.
-        from . import nuscenes_utils # 답안지 변환 및 성적표 출력 담당
-
-        # 1. 채점 준비
-        # 채점을 위해 GT 호출 -> NuScenes(...)를 호출하여 메타데이터(.json)를 메모리에 로드 -> nusc 객체가 바로 정답지 역할
+        from nuscenes.nuscenes import NuScenes
+        from . import nuscenes_utils
         nusc = NuScenes(version=self.dataset_cfg.VERSION, dataroot=str(self.root_path), verbose=True)
-
-        # 2. 답안지 작성
-        # 모델이 낸 예측 결과(det_annos)는 OpenPCDet 포맷입니다. 
-        # 이를 nuScenes 공식 평가 툴이 알아볼 수 있는 포맷으로 변환
         nusc_annos = nuscenes_utils.transform_det_annos_to_nusc_annos(det_annos, nusc)
-        # 핵심 변환 : 라이다 좌표계 ➡️ 글로벌 좌표계 변환 / 박스 포맷 변환 ([x, y, z, l, w, h, yaw] ➡️ translation, size, rotation(Quaternion)) / 속성(Attribute) 추측 추가 (예: 'vehicle.moving')
         nusc_annos['meta'] = {
             'use_camera': False,
             'use_lidar': True,
@@ -328,8 +293,7 @@ class NuScenesDataset(DatasetTemplate):
             'use_map': False,
             'use_external': False,
         }
-        # 3. 답안지를 .json으로 변환 
-        # 변환된 답안지(nusc_annos 딕셔너리)를 results_nusc.json 파일로 저장 -> nuScenes 리더보드에 제출할 수 있는 최종 결과 파일
+
         output_path = Path(kwargs['output_path'])
         output_path.mkdir(exist_ok=True, parents=True)
         res_path = str(output_path / 'results_nusc.json')
@@ -338,10 +302,8 @@ class NuScenesDataset(DatasetTemplate):
 
         self.logger.info(f'The predictions of NuScenes have been saved to {res_path}')
 
-        # 4. 채점 시작
         if self.dataset_cfg.VERSION == 'v1.0-test':
-            return 'No ground-truth annotations for evaluation', {} 
-        # 예외 처리: 만약 테스트 데이터셋(v1.0-test)이라면 정답지가 없으므로 채점을 할 수 없습니다. 메시지만 반환하고 종료
+            return 'No ground-truth annotations for evaluation', {}
 
         from nuscenes.eval.detection.config import config_factory
         from nuscenes.eval.detection.evaluate import NuScenesEval
@@ -351,7 +313,7 @@ class NuScenesDataset(DatasetTemplate):
             'v1.0-trainval': 'val',
             'v1.0-test': 'test'
         }
-        try: # 평가 기준 로드 
+        try:
             eval_version = 'detection_cvpr_2019'
             eval_config = config_factory(eval_version)
         except:
@@ -365,14 +327,14 @@ class NuScenesDataset(DatasetTemplate):
             eval_set=eval_set_map[self.dataset_cfg.VERSION],
             output_dir=str(output_path),
             verbose=True,
-        ) # 채점 실행
-        metrics_summary = nusc_eval.main(plot_examples=0, render_curves=False) # mAP, NDS 등 모든 점수가 계산
+        )
+        metrics_summary = nusc_eval.main(plot_examples=0, render_curves=False)
 
         with open(output_path / 'metrics_summary.json', 'r') as f:
             metrics = json.load(f)
 
         result_str, result_dict = nuscenes_utils.format_nuscene_results(metrics, self.class_names, version=eval_version)
-        return result_str, result_dict # 사람이 보기 좋은 문자열로 변환!
+        return result_str, result_dict
 
     def create_groundtruth_database(self, used_classes=None, max_sweeps=10): # used_classes가 기본 None으로 지정되어있어서 5개로 수정할 때 손 봐야함.
         import torch

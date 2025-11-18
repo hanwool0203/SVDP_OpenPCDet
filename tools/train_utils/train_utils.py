@@ -12,14 +12,26 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
                     rank, tbar, total_it_each_epoch, dataloader_iter, tb_log=None, leave_pbar=False, 
                     use_logger_to_record=False, logger=None, logger_iter_interval=50, cur_epoch=None, 
                     total_epochs=None, ckpt_save_dir=None, ckpt_save_time_interval=300, show_gpu_stat=False, use_amp=False):
+    # 1 epoch 훈련 루프
+    # 그래디언트 누적을 구현하기 위해 수정해야할 핵심 함수. -> 1 에포크 동안 수행할 반복 횟수 (batch_size에 따라 다름) : 815회
+
     if total_it_each_epoch == len(train_loader):
         dataloader_iter = iter(train_loader)
 
     ckpt_save_cnt = 1
     start_it = accumulated_iter % total_it_each_epoch
 
-    scaler = torch.cuda.amp.GradScaler(enabled=use_amp, init_scale=optim_cfg.get('LOSS_SCALE_FP16', 2.0**16))
+    scaler = torch.amp.GradScaler("cuda",enabled=use_amp, init_scale=optim_cfg.get('LOSS_SCALE_FP16', 2.0**16))
     
+    
+
+    # ⬇️ [추가 1] YAML에서 누적 스텝 값 가져오기 (없으면 1 = 누적 안 함)
+    ACCUMULATION_STEPS = optim_cfg.get('GRAD_ACCUMULATION_STEPS', 1)
+    optimizer_step = accumulated_iter // ACCUMULATION_STEPS
+
+    # ⬇️ [이동 1] 루프 시작 *전*에 딱 한 번만 초기화
+    optimizer.zero_grad()
+
     if rank == 0:
         pbar = tqdm.tqdm(total=total_it_each_epoch, leave=leave_pbar, desc='train', dynamic_ncols=True)
         data_time = common_utils.AverageMeter()
@@ -28,9 +40,10 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
         losses_m = common_utils.AverageMeter()
 
     end = time.time()
+    # 반복 루프 시작 -> cur_it가 0부터 814까지 돈다. 
     for cur_it in range(start_it, total_it_each_epoch):
         try:
-            batch = next(dataloader_iter)
+            batch = next(dataloader_iter) # batch_dict 하나를 가지고 온다.
         except StopIteration:
             dataloader_iter = iter(train_loader)
             batch = next(dataloader_iter)
@@ -39,7 +52,7 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
         data_timer = time.time()
         cur_data_time = data_timer - end
 
-        lr_scheduler.step(accumulated_iter, cur_epoch)
+        # lr_scheduler.step(accumulated_iter, cur_epoch) # 학습률 스케줄러를 업데이트 -> 매 iter마다 학습률이 조금씩 변함.
 
         try:
             cur_lr = float(optimizer.lr)
@@ -49,17 +62,42 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
         if tb_log is not None:
             tb_log.add_scalar('meta_data/learning_rate', cur_lr, accumulated_iter)
 
-        model.train()
-        optimizer.zero_grad()
+        model.train() # 모델을 Train 모드로 설정
+        #optimizer.zero_grad() # 이전 반복에서 쌓은 그래디언트를 초기화
+        # == 수정 포인트 1 == 
+        # 그래디언트 누적 시에 optimizer.zero_grad()를 매번 호출하면 안 되고, 누적이 끝났을 때만 호출해야함. 
 
-        with torch.cuda.amp.autocast(enabled=use_amp):
-            loss, tb_dict, disp_dict = model_func(model, batch)
+        with torch.amp.autocast("cuda",enabled=use_amp):
+            loss, tb_dict, disp_dict = model_func(model, batch) # 모델 실행 -> Loss를 계산
+        
+        # ⬇️ [추가 2] Loss를 누적 횟수로 나누어 평균화
+        loss = loss / ACCUMULATION_STEPS
 
-        scaler.scale(loss).backward()
-        scaler.unscale_(optimizer)
-        clip_grad_norm_(model.parameters(), optim_cfg.GRAD_NORM_CLIP)
-        scaler.step(optimizer)
-        scaler.update()
+        scaler.scale(loss).backward() # Backpropagation을 수행하여 그래디언트를 계산
+
+        # ⬇️ [추가 3] ACCUMULATION_STEPS 마다 (또는 에포크 마지막에) 한 번만 업데이트
+        if (cur_it + 1) % ACCUMULATION_STEPS == 0 or (cur_it + 1) == total_it_each_epoch:
+            scaler.unscale_(optimizer)
+            clip_grad_norm_(model.parameters(), optim_cfg.GRAD_NORM_CLIP)
+            scaler.step(optimizer)
+            scaler.update()
+            
+            # ⬇️ [이동 2] 업데이트 직후에만 그래디언트 초기화
+            optimizer.zero_grad()
+
+            # ★ 추가: optimizer step 카운터 증가
+            optimizer_step += 1
+
+            # ★ 추가: optimizer가 한 번 step할 때만 LR 스케줄러도 한 번 step
+            if lr_scheduler is not None:
+                lr_scheduler.step(optimizer_step, cur_epoch)
+
+        # scaler.unscale_(optimizer)
+        # clip_grad_norm_(model.parameters(), optim_cfg.GRAD_NORM_CLIP) # 그래디언트 폭발을 방지 위해 값을 자름.
+        # # == 수정 포인트 2 ==
+        # # 그래디언트 누적 시, backward()는 매번 하되, step()은 누적이 끝났을 때만 호출
+        # scaler.step(optimizer) # 계산된 그래디언트로 모델의 가중치를 업데이트
+        # scaler.update()
 
         accumulated_iter += 1
  
@@ -152,21 +190,24 @@ def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_
                 lr_warmup_scheduler=None, ckpt_save_interval=1, max_ckpt_save_num=50,
                 merge_all_iters_to_one_epoch=False, use_amp=False,
                 use_logger_to_record=False, logger=None, logger_iter_interval=None, ckpt_save_time_interval=None, show_gpu_stat=False, cfg=None):
-    accumulated_iter = start_iter
+    # 실제 train 과정(루프)를 담당하는 곳 -> train.py로부터 훈련에 필요한 모든 도구를 인자로 받는다.
+
+    accumulated_iter = start_iter # 현재까지 총 몇 번의 iter를 수행했는지 기록하는 변수 (중단 후 재시작 시 이어서 세기 위함.)
 
     # use for disable data augmentation hook
     hook_config = cfg.get('HOOK', None) 
     augment_disable_flag = False
 
+    # ========= Epochs 루프 시작 : start_epoch부터 total_epochs(예: 20)까지 반복하는 메인 루프 =======
     with tqdm.trange(start_epoch, total_epochs, desc='epochs', dynamic_ncols=True, leave=(rank == 0)) as tbar:
-        total_it_each_epoch = len(train_loader)
+        total_it_each_epoch = len(train_loader) # 1 epoch 당 몇 번의 iter가 필요한 지 계산
         if merge_all_iters_to_one_epoch:
             assert hasattr(train_loader.dataset, 'merge_all_iters_to_one_epoch')
             train_loader.dataset.merge_all_iters_to_one_epoch(merge=True, epochs=total_epochs)
             total_it_each_epoch = len(train_loader) // max(total_epochs, 1)
 
-        dataloader_iter = iter(train_loader)
-        for cur_epoch in tbar:
+        dataloader_iter = iter(train_loader) # 데이터 로더로부터 데이터를 하나씩 꺼낼 수 있는 반복자 생성
+        for cur_epoch in tbar: # 필요한 에포크만큼 반복
             if train_sampler is not None:
                 train_sampler.set_epoch(cur_epoch)
 
@@ -192,9 +233,9 @@ def train_model(model, optimizer, train_loader, model_func, lr_scheduler, optim_
                 ckpt_save_dir=ckpt_save_dir, ckpt_save_time_interval=ckpt_save_time_interval, 
                 show_gpu_stat=show_gpu_stat,
                 use_amp=use_amp
-            )
+            ) # 이 함수가 실제로 1 에포크 동안의 train을 수행 -> 업데이트된 총 반복 횟수 반환
 
-            # save trained model
+            # save trained model -> 에포크가 끝날 때마다 현재 모델 상태를 .pth 파일로 저장
             trained_epoch = cur_epoch + 1
             if trained_epoch % ckpt_save_interval == 0 and rank == 0:
 

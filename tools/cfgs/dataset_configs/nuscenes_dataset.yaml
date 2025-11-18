@@ -1,67 +1,69 @@
+# 이 ymal 파일의 역할 : 원본 nuScenes 데이터를 라이다 모델에 넣기 직전까지 어떻게 불러오고, 가공(전처리)하고, 변형(증강)할지 모든 규칙을 정의하는 것
 DATASET: 'NuScenesDataset'
 DATA_PATH: '../data/nuscenes'
 
-VERSION: 'v1.0-trainval'
-MAX_SWEEPS: 10
-PRED_VELOCITY: True
-SET_NAN_VELOCITY_TO_ZEROS: True
-FILTER_MIN_POINTS_IN_GT: 1
+VERSION: 'v1.0-trainval' # 데이터 기본 설정 - full dataset 사용하면 'v1.0-trainval'
+MAX_SWEEPS: 10 # PointPillars 모델이 1프레임만 보는 것이 아니라, 현재 프레임 + 과거 9개 프레임, 즉 **총 10개 프레임(Sweeps)**의 라이다 스캔을 겹쳐서 사용하라고 지시
+PRED_VELOCITY: True # 모델이 속도(vx, vy)를 예측(True)해야 한다고 정의
+SET_NAN_VELOCITY_TO_ZEROS: True # 속도가 NaN 값이 나오면 0으로 자동 변환
+FILTER_MIN_POINTS_IN_GT: 1 # GT 박스라도 그 박스 안에 Point가 1개 미만 (=0개)이면 train data에서 제거
 
 DATA_SPLIT: {
-    'train': train,
-    'test': val
+    'train': train, # train.py는 train (문자열 'train') 스플릿을 사용
+    'test': val # test.py는 val (문자열 'val') 스플릿을 사용
 }
 
 INFO_PATH: {
-    'train': [nuscenes_infos_10sweeps_train.pkl],
+    'train': [nuscenes_infos_10sweeps_train.pkl], # DATA_SPLIT의 지시에 따라 해당 데이터베이스 정보 파일(.pkl)을 읽는다.
     'test': [nuscenes_infos_10sweeps_val.pkl],
 }
 
-POINT_CLOUD_RANGE: [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
+POINT_CLOUD_RANGE: [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0] # 여기 값이 어차피 pp의 yaml 파일에서 덮어씌워져서 의미가 없어짐.
 
-BALANCED_RESAMPLING: True 
+BALANCED_RESAMPLING: True # Class 불균형 문제를 해소하기 위해 훈련 데이터를 재조정 ('bicycle'처럼 희귀한 클래스가 포함된 씬(scene)을 더 자주, 중복해서 샘플링)
 
-DATA_AUGMENTOR:
+DATA_AUGMENTOR: # 데이터 증강 기법 (train 시에만 적용)
     DISABLE_AUG_LIST: ['placeholder']
     AUG_CONFIG_LIST:
-        - NAME: gt_sampling
+        - NAME: gt_sampling # GT 데이터를 복사 - 붙여넣기 하는 기법
           DB_INFO_PATH:
-              - nuscenes_dbinfos_10sweeps_withvelo.pkl
+              - nuscenes_dbinfos_10sweeps_withvelo.pkl # GT 객체 데이터베이스
           PREPARE: {
              filter_by_min_points: [
                  'car:5','truck:5', 'construction_vehicle:5', 'bus:5', 'trailer:5',
                  'barrier:5', 'motorcycle:5', 'bicycle:5', 'pedestrian:5', 'traffic_cone:5'
-             ],
+             ], # Point가 5개 미만인 객체는 품질이 나쁘므로 DB에 저장하지 않는다.
           }
 
           SAMPLE_GROUPS: [
               'car:2','truck:3', 'construction_vehicle:7', 'bus:4', 'trailer:6',
               'barrier:2', 'motorcycle:6', 'bicycle:6', 'pedestrian:2', 'traffic_cone:2'
-          ]
+          ] # 실제 train 시에 DB에서 'car' 2개, 'truck' 3개 등을 무작위로 뽑아와서 현재 훈련 씬에 붙여넣기 (씬을 더 풍부하게 만듦)
+          # 여기도 Class 5개로 줄이면 없애버려야하는 거 아닌가?
 
           NUM_POINT_FEATURES: 5
           DATABASE_WITH_FAKELIDAR: False
           REMOVE_EXTRA_WIDTH: [0.0, 0.0, 0.0]
           LIMIT_WHOLE_SCENE: True
 
-        - NAME: random_world_flip
+        - NAME: random_world_flip # 씬(scene) 전체를 X축으로 50% 확률로 뒤집고, Y축으로 50% 확률로 뒤집습니다.
           ALONG_AXIS_LIST: ['x', 'y']
 
-        - NAME: random_world_rotation
+        - NAME: random_world_rotation # 씬(scene) 전체를 Z축 기준으로 무작위 회전 (-0.3925 ~ +0.3925 라디안 (약 -22.5도 ~ +22.5도) 사이의 값)
           WORLD_ROT_ANGLE: [-0.3925, 0.3925]
 
-        - NAME: random_world_scaling
+        - NAME: random_world_scaling # 씬(scene) 전체를 무작위로 확대/축소 (0.95배 ~ 1.05배)
           WORLD_SCALE_RANGE: [0.95, 1.05]
 
 
-POINT_FEATURE_ENCODING: {
-    encoding_type: absolute_coordinates_encoding,
-    used_feature_list: ['x', 'y', 'z', 'intensity', 'timestamp'],
-    src_feature_list: ['x', 'y', 'z', 'intensity', 'timestamp'],
+POINT_FEATURE_ENCODING: { #.bin 파일에서 읽어온 원본 포인트를 모델이 사용할 최종 특징(feature)으로 변환하는 방법을 정의
+    encoding_type: absolute_coordinates_encoding, # Point의 x,y,z 절대 좌표를 그대로 사용
+    used_feature_list: ['x', 'y', 'z', 'intensity', 'timestamp'], # 데이터 로더가 최종적으로 모델에게 전달할 5개의 특징
+    src_feature_list: ['x', 'y', 'z', 'intensity', 'timestamp'], 
 }
 
 
-DATA_PROCESSOR:
+DATA_PROCESSOR: # 이 섹션은 cbgs_pp_multihead.yaml 파일에도 똑같은 이름으로 존재 -> 상속 규칙에 따라 이 부분은 완전히 Override 된다. 
     - NAME: mask_points_and_boxes_outside_range
       REMOVE_OUTSIDE_BOXES: True
 

@@ -1,61 +1,64 @@
 CLASS_NAMES: ['car','truck', 'construction_vehicle', 'bus', 'trailer',
-              'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone']
+              'barrier', 'motorcycle', 'bicycle', 'pedestrian', 'traffic_cone'] 
+              # 모델이 탐지해야 할 모든 클래스의 목록
+              # 이 리스트를 기준으로 1-based indexing을 사용 (1~10까지)
 
-DATA_CONFIG:
-    _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_dataset.yaml
+DATA_CONFIG: # nuScenes 데이터를 모델에 입력하기 전에 "전처리"를 어떻게 할 지에 대해 정의
+    _BASE_CONFIG_: cfgs/dataset_configs/nuscenes_dataset.yaml # "상속" 기능 -> train.py를 실행했을 때 이 파일의 설정값을 읽기 전nuscenes_dataset.yaml 파일의 모든 설정을 불러온다. -> 만약 두 파일에 같은 설정이 있으면, 뒤에 있는 파일 (즉 이 파일)의 설정이 Override한다!
 
-    POINT_CLOUD_RANGE: [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0]
-    DATA_PROCESSOR:
+    POINT_CLOUD_RANGE: [-51.2, -51.2, -5.0, 51.2, 51.2, 3.0] # 모델이 처리할 3D 공간의 경계 [x_min, y_min, z_min, x_max, y_max, z_max] (미터 단위) -> 이 범위를 벗어나는 모든 포인트 클라우드와 GT 박스는 "데이터 로딩" 단계에서 제거
+    DATA_PROCESSOR: # 데이터 전처리 파이프라인 
         -   NAME: mask_points_and_boxes_outside_range
-            REMOVE_OUTSIDE_BOXES: True
+            REMOVE_OUTSIDE_BOXES: True # POINT_CLOUD_RANGE 설정을 실행하는 함수 -> 이 함수가 어디에 구현되어 있는지 확인해야 함.
 
         -   NAME: shuffle_points
             SHUFFLE_ENABLED: {
                 'train': True,
                 'test': True
-            }
+            } # 포인트 클라우드의 순서를 섞어주는 함수 -> PillarVFE는 포인트 순서에 대해 영향을 받지 않아야하므로 순서를 섞어주면 모델의 강건성이 향상
 
-        -   NAME: transform_points_to_voxels
-            VOXEL_SIZE: [0.2, 0.2, 8.0]
-            MAX_POINTS_PER_VOXEL: 20
+        -   NAME: transform_points_to_voxels # PointPillars의 Pillar 생성 단계 
+            VOXEL_SIZE: [0.2, 0.2, 8.0] # Pillar 한 개의 크기를 정의 (가로 : 20cm, 세로 : 20cm, 높이 8m) 높이가 8m인 이유는 아까 포인트 클라우드 range에서 8m로 지정했기 때문 ! 압축할 거니까 이 높이를 맞춰주어야 한다.
+            MAX_POINTS_PER_VOXEL: 20 # Pillar 1개에 담을 수 있는 최대 포인트 수 -> 20개 넘으면 무작위 샘플링
             MAX_NUMBER_OF_VOXELS: {
                 'train': 30000,
                 'test': 30000
-            }
+            } # 한 프레임(Scene)에서 사용할 Pillar의 최대 개수 -> 30,000개가 넘으면 무작위로 30,000개만 샘플링 (GPU 메모리 폭발 방지용)
 
-MODEL:
-    NAME: PointPillar
+MODEL: # 모델의 아키텍처 구조를 정의하는 핵심적인 섹션
+    NAME: PointPillar # pcdet/models/detectors/pointpillar.py 파일을 로드하라는 의미 -> 파이썬 파일이 VFE, Backbone, Head를 조립
 
     VFE:
-        NAME: PillarVFE
-        WITH_DISTANCE: False
+        NAME: PillarVFE # pcdet/models/backbones_3d/vfe/pillar_vfe.py 파일을 로드 -> MAX_POINTS_PER_VOXEL (20개)의 포인트를 입력받아 Pillar Feature Net을 통과시켜 하나의 feature vector를 만든다. 
+        WITH_DISTANCE: False 
         USE_ABSLOTE_XYZ: True
         USE_NORM: True
-        NUM_FILTERS: [64]
+        NUM_FILTERS: [64] # 최종 출력 차원 (filter의 개수가 출력의 차원이 되는 것 -> 왜냐면 Shared-MLP(Conv1D)이니까!) 즉, (20, 5) (포인트 20개 x 특징 5개) ➡️ PFN ➡️ (1, 64) (64차원 특징 벡터 1개)
 
     MAP_TO_BEV:
-        NAME: PointPillarScatter
-        NUM_BEV_FEATURES: 64
+        NAME: PointPillarScatter # pcdet/models/map_to_bev/pointpillar_scatter.py 파일을 로드 -> VFE가 만든 (N, 64) 크기의 Pillar 특징들을 2D 그리드 상의 올바른 (x, y) 좌표에 "흩뿌려서(scatter)" 2D 유사 이미지(Pseudo-Image)를 생성
+        NUM_BEV_FEATURES: 64 # 입력 채널이 64임을 확인
 
-    BACKBONE_2D:
-        NAME: BaseBEVBackbone
+    BACKBONE_2D: # pcdet/models/backbones_2d/base_bev_backbone.py 파일을 로드
+        NAME: BaseBEVBackbone 
         LAYER_NUMS: [3, 5, 5]
         LAYER_STRIDES: [2, 2, 2]
-        NUM_FILTERS: [64, 128, 256]
+        NUM_FILTERS: [64, 128, 256] # 2D 유사 이미지를 3번 다운 샘플링하면서 feature map을 깊게 만든다.
         UPSAMPLE_STRIDES: [0.5, 1, 2]
-        NUM_UPSAMPLE_FILTERS: [128, 128, 128]
+        NUM_UPSAMPLE_FILTERS: [128, 128, 128] # 다운 샘플링된 3개의 feature map을 업샘플링하여 모두 합친다. (Concatenate) 
+        # 이 방식은 FPN과 유사, 최종 head가 더 풍부한 정보 (작은 객체 & 큰 객체)를 보게 해준다.
 
-    DENSE_HEAD:
-        NAME: AnchorHeadMulti
+    DENSE_HEAD: # pcdet/models/dense_heads/anchor_head_multi.py 파일을 로드
+        NAME: AnchorHeadMulti # 이것이 최종 detection head이며 논문에서 말하는 SSD 방식의 head
         CLASS_AGNOSTIC: False
 
         DIR_OFFSET: 0.78539
         DIR_LIMIT_OFFSET: 0.0
         NUM_DIR_BINS: 2
 
-        USE_MULTIHEAD: True
+        USE_MULTIHEAD: True # 1개의 거대한 head가 10개의 클래스를 모두 예측하는 것이 아니라, 6개의 작은 헤드로 작업을 분산
         SEPARATE_MULTIHEAD: True
-        ANCHOR_GENERATOR_CONFIG: [
+        ANCHOR_GENERATOR_CONFIG: [ # 미리 정의된 앵커 박스 -> 나중에 커스텀 앵커박스로 수정해야함.
             {
                 'class_name': car,
                 'anchor_sizes': [[4.63, 1.97, 1.74]],
@@ -160,7 +163,7 @@ MODEL:
 
         SHARED_CONV_NUM_FILTER: 64
 
-        RPN_HEAD_CFGS: [
+        RPN_HEAD_CFGS: [ # 분산된 작은 6개의 헤드 -> class 불균형 문제를 해소하기 위한 CBGS(Class-Balanced Grouping)라는 고급 기법
             {
                 'HEAD_CLS_NAME': ['car'],
             },
@@ -180,56 +183,56 @@ MODEL:
                 'HEAD_CLS_NAME': ['pedestrian', 'traffic_cone'],
             },
         ]
-        SEPARATE_REG_CONFIG: 
+        SEPARATE_REG_CONFIG: # 모델이 각 앵커박스에 대해 Regression 해야할 수정값의 목록
             NUM_MIDDLE_CONV: 1
             NUM_MIDDLE_FILTER: 64
-            REG_LIST: ['reg:2', 'height:1', 'size:3', 'angle:2', 'velo:2']
+            REG_LIST: ['reg:2', 'height:1', 'size:3', 'angle:2', 'velo:2'] # 자세한 사항은 노션에
 
-        TARGET_ASSIGNER_CONFIG:
-            NAME: AxisAlignedTargetAssigner
-            POS_FRACTION: -1.0
-            SAMPLE_SIZE: 512
-            NORM_BY_NUM_EXAMPLES: False
-            MATCH_HEIGHT: False
-            BOX_CODER: ResidualCoder
+        TARGET_ASSIGNER_CONFIG: # train 시, 수천 개의 앵커 박스 중 어떤 앵커가 Positive이고 어떤 앵커가 Negative인지 할당하는 규칙
+            NAME: AxisAlignedTargetAssigner # 심판 선정 -> 2D IoU를 사용하여 정답 / 배경을 판정
+            POS_FRACTION: -1.0 # 정답 : 배경 비율은? -> 굳이 정하지 않겠다.
+            SAMPLE_SIZE: 512 # 훈련 시 사용할 총 앵커 샘플 수 -> 한 번에 iter에서 Loss를 계산할 때, 수 천개의 앵커 중에 512개만 무작위로 샘플링해서 사용
+            NORM_BY_NUM_EXAMPLES: False # Loss를 무엇으로 나눌 것인가? -> Loss를 Positive 앵커의 개수로 나눔.
+            MATCH_HEIGHT: False # 정답을 판정할 때 높이를 고려하는지 ? -> 2D BEV에서 겹치기만 하면 정답으로 판정
+            BOX_CODER: ResidualCoder # 모델이 무엇을 예측하는지? -> 절대 좌표 (x,y,z)를 예측하는 것보다는 앵커박스와 GT box 사이의 Residual을 예측하는 것이 훨씬 쉽고 안정적이다.
             BOX_CODER_CONFIG: {
-                'code_size': 9,
-                'encode_angle_by_sincos': True
-            }
+                'code_size': 9, # ResidualCoder가 다루는 개념적인 박스 정보의 개수입니다. (x, y, z, l, w, h, yaw, vx, vy)로 총 9개
+                'encode_angle_by_sincos': True # yaw (각도) 값은 -pi와 +pi가 같아서 학습이 어렵습니다. 따라서 yaw 대신 sin(yaw)와 cos(yaw)라는 2개의 연속적인 값으로 변환해서 학습
+            } # 이 설정 때문에 code_size: 9는 사실상 10개의 값(reg:2, height:1, size:3, angle:2, velo:2)을 의미 -> code_weights의 10개 항목과 일치
 
 
-        LOSS_CONFIG:
+        LOSS_CONFIG: # Loss function을 정의 
             REG_LOSS_TYPE: WeightedL1Loss
             LOSS_WEIGHTS: {
                 'pos_cls_weight': 1.0,
                 'neg_cls_weight': 2.0,
-                'cls_weight': 1.0,
-                'loc_weight': 0.25,
-                'dir_weight': 0.2,
-                'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2]
-            }
+                'cls_weight': 1.0, # Focal Loss의 가중치 (Classifiaction)
+                'loc_weight': 0.25, # 위치/크기 Loss
+                'dir_weight': 0.2, # 방향 Loss
+                'code_weights': [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.2, 0.2] # loc_weight와 dir_weight에 대한 세부 가중치 -> SEPARATE_REG_CONFIG의 10개 예측값 (dx, dy, dz, dl, dw, dh, sin, cos, vx, vy)에 1:1로 대응, 0.2, 0.2 ➡️ 마지막 두 개인 속도(vx, vy) 예측은 다른 위치 예측보다 덜 중요하게(가중치 0.2) 다루겠다는 의미
+            } # 총 Loss = Cls Loss + Reg Loss + Orientation Loss
 
-    POST_PROCESSING:
-        RECALL_THRESH_LIST: [0.3, 0.5, 0.7]
-        SCORE_THRESH: 0.1
-        OUTPUT_RAW_SCORE: False
+    POST_PROCESSING: # 모델이 예측을 완료한 이후에 수행하는 후처리 작업
+        RECALL_THRESH_LIST: [0.3, 0.5, 0.7] # 평가용 로그
+        SCORE_THRESH: 0.2 # 모델이 예측한 수천 개의 박스 중, 신뢰도 점수가 10% (0.1) 미만인 박스는 즉시 모두 버림.
+        OUTPUT_RAW_SCORE: False # SCORE_THRESH에 사용되는 점수는 0~1 사이로 정규화된 점수(Sigmoid)
 
-        EVAL_METRIC: kitti
+        EVAL_METRIC: kitti # nuscenes_dataset.py의 evaluation 함수는 이 설정을 무시하고, nuScenes 공식 평가(NuScenesEval)를 강제로 실행
 
-        NMS_CONFIG:
-            MULTI_CLASSES_NMS: True
+        NMS_CONFIG: # 겹친 박스 중에 1등만 남긴다.
+            MULTI_CLASSES_NMS: True # True이면 NMS를 클래스별로 따로 실행
             NMS_TYPE: nms_gpu
             NMS_THRESH: 0.2
-            NMS_PRE_MAXSIZE: 1000
-            NMS_POST_MAXSIZE: 83
+            NMS_PRE_MAXSIZE: 1000 # NMS를 실행하기 "전(PRE)", 클래스별로 상위 1000개의 박스만 잘라서 NMS를 실행
+            NMS_POST_MAXSIZE: 83 # NMS가 끝난 "후(POST)", 모든 클래스를 합쳐서 최종적으로 상위 83개의 박스만 남김
 
 
-OPTIMIZATION:
-    BATCH_SIZE_PER_GPU: 4
-    NUM_EPOCHS: 20
+OPTIMIZATION: # 모델을 훈련시키는 방법을 정의
+    BATCH_SIZE_PER_GPU: 4 # 훈련 시 GPU 1개가 한 번에 처리할 데이터의 양 (처음에 훈련 시킬 때 args로 덮어쓰기 가능)
+    NUM_EPOCHS: 20 # 에포크 수
 
-    OPTIMIZER: adam_onecycle
-    LR: 0.001
+    OPTIMIZER: adam_onecycle # Optimizer는 Adam, lr 스케줄러는 OneCycle을 사용 (OneCycle 학습률을 천천히 올렸다가(Warmup) 빠르게 내리는, 매우 효과적인 최신 스케줄러)
+    LR: 0.0001
     WEIGHT_DECAY: 0.01
     MOMENTUM: 0.9
 
@@ -244,3 +247,4 @@ OPTIMIZATION:
     WARMUP_EPOCH: 1
 
     GRAD_NORM_CLIP: 10
+    GRAD_ACCUMULATION_STEPS: 16
