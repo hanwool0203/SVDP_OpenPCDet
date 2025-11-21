@@ -30,9 +30,9 @@ DATA_AUGMENTOR: # 데이터 증강 기법 (train 시에만 적용)
               - nuscenes_dbinfos_10sweeps_withvelo.pkl # GT 객체 데이터베이스
           PREPARE: {
              filter_by_min_points: [
-                 'car:5','truck:5', 'construction_vehicle:5', 'bus:5', 'trailer:5',
-                 'barrier:5', 'motorcycle:5', 'bicycle:5', 'pedestrian:5', 'traffic_cone:5'
-             ], # Point가 5개 미만인 객체는 품질이 나쁘므로 DB에 저장하지 않는다.
+                 'car:2','truck:2', 'construction_vehicle:2', 'bus:2', 'trailer:2',
+                 'barrier:1', 'motorcycle:1', 'bicycle:1', 'pedestrian:1', 'traffic_cone:1'
+             ], # Point가 5개 미만인 객체는 품질이 나쁘므로 DB에 저장하지 않는다. (수정사항 - 원래 다 전부 5였음)!!
           }
 
           SAMPLE_GROUPS: [
@@ -50,7 +50,7 @@ DATA_AUGMENTOR: # 데이터 증강 기법 (train 시에만 적용)
           ALONG_AXIS_LIST: ['x', 'y']
 
         - NAME: random_world_rotation # 씬(scene) 전체를 Z축 기준으로 무작위 회전 (-0.3925 ~ +0.3925 라디안 (약 -22.5도 ~ +22.5도) 사이의 값)
-          WORLD_ROT_ANGLE: [-0.3925, 0.3925]
+          WORLD_ROT_ANGLE: [-0.19625, 0.19625] # 기존 [-0.3925, 0.3925]의 절반 (추천)
 
         - NAME: random_world_scaling # 씬(scene) 전체를 무작위로 확대/축소 (0.95배 ~ 1.05배)
           WORLD_SCALE_RANGE: [0.95, 1.05]

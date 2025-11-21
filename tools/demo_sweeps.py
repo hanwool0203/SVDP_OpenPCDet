@@ -13,7 +13,7 @@ from pcdet.models import build_network, load_data_to_gpu
 from pcdet.utils import common_utils
 from pcdet.datasets import DatasetTemplate
 from pcdet.datasets.nuscenes.nuscenes_dataset import NuScenesDataset
-from tools.visual_utils import open3d_vis_utils as V
+from visual_utils import open3d_vis_utils as V
 
 # --- nuScenes Devkit 로드 (카메라 연동용) ---
 # ‼️ 사용자님의 v1.0-mini 경로로 설정되어 있는지 확인하세요

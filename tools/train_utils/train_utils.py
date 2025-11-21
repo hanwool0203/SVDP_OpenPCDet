@@ -59,9 +59,6 @@ def train_one_epoch(model, optimizer, train_loader, model_func, lr_scheduler, ac
         except:
             cur_lr = optimizer.param_groups[0]['lr']
 
-        if tb_log is not None:
-            tb_log.add_scalar('meta_data/learning_rate', cur_lr, accumulated_iter)
-
         model.train() # 모델을 Train 모드로 설정
         #optimizer.zero_grad() # 이전 반복에서 쌓은 그래디언트를 초기화
         # == 수정 포인트 1 == 
